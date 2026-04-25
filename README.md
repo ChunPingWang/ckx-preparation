@@ -8,7 +8,15 @@
 
 ## 目錄
 
-> 📝 **實戰練習手冊**：完整 22 個 Lab + 2 場模擬考 → 請見 **[CKA_PRACTICE.md](./CKA_PRACTICE.md)**
+> 📝 **實戰練習手冊**（本 PoC 同時涵蓋 CKA / CKAD / CKS 三種認證）：
+>
+> | 認證 | 練習手冊 | 內容 |
+> |------|---------|------|
+> | **CKA**（Administrator） | [CKA_PRACTICE.md](./CKA_PRACTICE.md) | 22 個 Lab + 2 場模擬考 + 快速複習索引 |
+> | **CKAD**（App Developer） | [CKAD_PRACTICE.md](./CKAD_PRACTICE.md) | 17 個 Lab + 2 場模擬考 |
+> | **CKS**（Security Specialist）| [CKS_PRACTICE.md](./CKS_PRACTICE.md) | 21 個 Lab + 2 場模擬考 + 速查表 |
+>
+> 本 README 著重於 **CKA** 的叢集架設與管理；CKAD 著重應用部署與設定，CKS 須先持有 CKA 並聚焦於安全防護。
 
 1. [版本選擇說明](#1-版本選擇說明)
 2. [架構總覽](#2-架構總覽)
