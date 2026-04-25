@@ -1,0 +1,17 @@
+# Vagrant runtime state (machine-specific)
+.vagrant/
+
+# kubeadm join token — contains live bootstrap secret
+join_command.sh
+
+# Local kubeconfig and certs
+kubeconfig
+admin.conf
+*.kubeconfig
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~
