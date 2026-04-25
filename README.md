@@ -32,7 +32,7 @@
 12. [RBAC 設定實戰](#12-rbac-設定實戰)
 13. [CKA 重點考點整理](#13-cka-重點考點整理)
 14. [常見問題排查](#14-常見問題排查)
-15. [叢集清理](#15-叢集清理)
+15. [叢集生命週期管理](#15-叢集生命週期管理)
 
 ---
 
@@ -163,9 +163,11 @@ VBoxManage --version # 7.0.x
 k8s-cka-poc/
 ├── Vagrantfile              # VM 定義：3 台機器的規格與網路
 ├── scripts/
-│   ├── common.sh            # 所有節點共用：containerd + kubeadm 安裝
-│   ├── master_setup.sh      # 僅 Control Plane：kubeadm init + Calico
-│   └── worker_setup.sh      # 僅 Worker Node：等待並 join
+│   ├── common.sh            # 所有節點共用：containerd + kubeadm 安裝（VM 內執行）
+│   ├── master_setup.sh      # 僅 Control Plane：kubeadm init + Calico（VM 內執行）
+│   ├── worker_setup.sh      # 僅 Worker Node：等待並 join（VM 內執行）
+│   ├── pause-cluster.sh     # Host 端：vagrant suspend 全部 VM
+│   └── resume-cluster.sh    # Host 端：依正確順序 vagrant resume + 等待 API Server
 ├── manifests/               # K8s YAML 資源定義
 │   ├── rbac/
 │   │   ├── 01-namespace.yaml
@@ -1513,25 +1515,76 @@ kubectl auth can-i list pods -n dev \
 
 ---
 
-## 15. 叢集清理
+## 15. 叢集生命週期管理
+
+依需求選擇下列操作：
+
+| 情境 | 指令 | RAM 釋放 | 復原速度 | 資料保留 |
+|------|------|---------|---------|---------|
+| **臨時離開**（午餐、會議） | `vagrant suspend` | ❌ 不釋放 | ~10–20 秒 | ✅ 連 in-memory 狀態 |
+| **長時間關閉**（過夜、隔日繼續） | `vagrant halt` | ✅ 釋放 | ~30–60 秒 | ✅ 磁碟資料保留，叢集自動 reconcile |
+| **完全銷毀**（重新練習） | `vagrant destroy -f` | ✅ 釋放 | 10+ 分鐘（重建） | ❌ 全清空 |
+| **保留 VM 重置 K8s** | `kubeadm reset` | — | — | VM 保留，K8s 狀態清空 |
+
+> 💡 `vagrant halt` 不是 pause，而是 **優雅關機**；真正的暫停是 `vagrant suspend`（VM 狀態 snapshot 到磁碟，RAM 仍占空間但 CPU 釋放）。
+
+### 15.1 暫停與復原（推薦日常使用）
+
+本專案附帶 helper 腳本，依正確順序操作 3 台 VM：
 
 ```bash
-# 方式 1：暫停（保留所有設定，下次 vagrant up 繼續）
-vagrant halt
+# 暫停整個叢集（在 Host 機器、Vagrantfile 同目錄執行）
+./scripts/pause-cluster.sh
 
-# 方式 2：完全銷毀（需重新 vagrant up 重建）
-vagrant destroy -f
+# 復原（master 先起，等 API Server Ready 後再起 workers）
+./scripts/resume-cluster.sh
+```
 
-# 方式 3：只重置 K8s（不刪 VM）
+或手動執行（不需腳本時）：
+
+```bash
+# 暫停（順序不重要）
+vagrant suspend k8s-node2 k8s-node1 k8s-master
+
+# 復原（建議 master 先，避免 workers 連不到 API Server）
+vagrant resume k8s-master
+vagrant resume k8s-node1 k8s-node2
+```
+
+### 15.2 關機與開機
+
+```bash
+vagrant halt              # 優雅關機，全部 VM 進入 poweroff 狀態
+vagrant up                # 開機（已 provisioned 過，跳過 setup 腳本）
+```
+
+### 15.3 完全銷毀
+
+```bash
+vagrant destroy -f        # 刪除全部 VM 與磁碟，需重新 vagrant up 建立
+```
+
+### 15.4 保留 VM 但只重置 K8s
+
+不刪 VM，只把 K8s 狀態清光，便於重練 `kubeadm init` 流程：
+
+```bash
 vagrant ssh k8s-master
   sudo kubeadm reset -f
   sudo rm -rf /etc/kubernetes /var/lib/etcd $HOME/.kube
+  exit
 
 vagrant ssh k8s-node1
   sudo kubeadm reset -f
+  exit
 
 vagrant ssh k8s-node2
   sudo kubeadm reset -f
+  exit
+
+# 重新跑 master + worker provision
+vagrant provision k8s-master
+vagrant provision k8s-node1 k8s-node2
 ```
 
 ---
