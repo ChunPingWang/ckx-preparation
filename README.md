@@ -790,7 +790,7 @@ sudo kubeadm init \
 > **RBAC（Role-Based Access Control）** 是 CKA 的高頻考點！  
 > 核心概念：**Who（SA/User）** 透過 **RoleBinding/ClusterRoleBinding** 取得 **Role/ClusterRole** 所定義的 **What（API 操作權限）**
 
-### 11.1 RBAC 核心資源關係圖
+### 12.1 RBAC 核心資源關係圖
 
 ```
                     ┌──────────────────────────────────┐
@@ -811,7 +811,7 @@ sudo kubeadm init \
   └──────────────────┴──────────────────────────────────┘
 ```
 
-### 11.2 Namespace 建立
+### 12.2 Namespace 建立
 
 建立 `manifests/rbac/01-namespace.yaml`：
 
@@ -832,7 +832,7 @@ metadata:
     env: production
 ```
 
-### 11.3 ServiceAccount 建立
+### 12.3 ServiceAccount 建立
 
 建立 `manifests/rbac/02-serviceaccount.yaml`：
 
@@ -858,7 +858,7 @@ metadata:
   namespace: dev
 ```
 
-### 11.4 Role 定義（Namespace 範圍）
+### 12.4 Role 定義（Namespace 範圍）
 
 建立 `manifests/rbac/03-role.yaml`：
 
@@ -923,7 +923,7 @@ rules:
     verbs: ["get", "list", "watch"]
 ```
 
-### 11.5 RoleBinding（將 Role 綁給 ServiceAccount）
+### 12.5 RoleBinding（將 Role 綁給 ServiceAccount）
 
 建立 `manifests/rbac/04-rolebinding.yaml`：
 
@@ -977,7 +977,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-### 11.6 ClusterRole（跨 Namespace 範圍）
+### 12.6 ClusterRole（跨 Namespace 範圍）
 
 建立 `manifests/rbac/05-clusterrole.yaml`：
 
@@ -1022,7 +1022,7 @@ rules:
     verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
 ```
 
-### 11.7 ClusterRoleBinding
+### 12.7 ClusterRoleBinding
 
 建立 `manifests/rbac/06-clusterrolebinding.yaml`：
 
@@ -1067,7 +1067,7 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 ```
 
-### 11.8 套用所有 RBAC 設定
+### 12.8 套用所有 RBAC 設定
 
 ```bash
 # 套用全部 RBAC 資源（在 k8s-master 上執行）
@@ -1081,7 +1081,7 @@ kubectl get clusterrole | grep -E "cluster-monitor|storage-admin"
 kubectl get clusterrolebinding | grep cluster-monitor
 ```
 
-### 11.9 RBAC 驗證指令（CKA 高頻指令）
+### 12.9 RBAC 驗證指令（CKA 高頻指令）
 
 ```bash
 # ── auth can-i：最直接的權限驗證方式 ────────────────────────
@@ -1148,7 +1148,7 @@ kubectl create role test-role \
 
 ## 13. CKA 重點考點整理
 
-### 12.1 叢集架構與安裝（25%）
+### 13.1 叢集架構與安裝（25%）
 
 ```bash
 # ── kubeadm 常用指令 ──────────────────────────────────────
@@ -1192,7 +1192,7 @@ ETCDCTL_API=3 etcdctl snapshot restore /tmp/etcd-backup.db \
 # 修改 /etc/kubernetes/manifests/etcd.yaml 指向新的 data-dir
 ```
 
-### 12.2 工作負載管理（15%）
+### 13.2 工作負載管理（15%）
 
 ```bash
 # ── Deployment 操作 ───────────────────────────────────────
@@ -1218,7 +1218,7 @@ kubectl scale deployment nginx-demo --replicas=5
 kubectl autoscale deployment nginx-demo --min=2 --max=10 --cpu-percent=70
 ```
 
-### 12.3 排程（Scheduling）（15%）
+### 13.3 排程（Scheduling）（15%）
 
 ```yaml
 # nodeSelector：選擇特定節點
@@ -1269,7 +1269,7 @@ kubectl taint nodes k8s-node1 env=prod:NoSchedule-   # 加 - 表示移除
 kubectl describe pod <pod-name> | grep -A 5 Events
 ```
 
-### 12.4 儲存（Storage）（10%）
+### 13.4 儲存（Storage）（10%）
 
 ```yaml
 # PersistentVolume (PV) - 叢集管理員建立
@@ -1312,7 +1312,7 @@ kubectl get pv,pvc -A
 # Released - PVC 刪除後，PV 等待回收
 ```
 
-### 12.5 網路（Networking）（20%）
+### 13.5 網路（Networking）（20%）
 
 ```bash
 # ── Service 類型 ──────────────────────────────────────────
@@ -1360,7 +1360,7 @@ spec:
       port: 8080
 ```
 
-### 12.6 故障排查（Troubleshooting）（30%）
+### 13.6 故障排查（Troubleshooting）（30%）
 
 ```bash
 # ── Pod 排查 ──────────────────────────────────────────────
@@ -1403,7 +1403,7 @@ ls /etc/kubernetes/manifests/
 # ImagePullBackOff  - 映像拉取失敗（查 image 名稱或 registry）
 ```
 
-### 12.7 CKA 考試必備技巧
+### 13.7 CKA 考試必備技巧
 
 ```bash
 # 1. 善用 alias 和 dry-run（考試前必設定）
