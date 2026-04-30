@@ -1,1626 +1,273 @@
-# Kubernetes CKA 認證實戰 PoC
-## Vagrant + VirtualBox + kubeadm：Control Plane × 1 ＋ Worker Node × 2
+# Kubernetes CKx 認證實戰練習環境
 
-> **目標受眾**：初學者 / CKA 考試備考  
-> **學習目標**：從零搭建多節點 K8s 叢集，掌握 kubeadm 流程、網路插件、RBAC 等 CKA 核心考點
+> **涵蓋 CKA / CKAD / CKS 三種認證**的完整練習環境與題庫
 
 ---
 
 ## 目錄
 
-> 📝 **實戰練習手冊**（本 PoC 同時涵蓋 CKA / CKAD / CKS 三種認證）：
->
-> | 認證 | 練習手冊 | 內容 |
-> |------|---------|------|
-> | **CKA**（Administrator） | [CKA_PRACTICE.md](./CKA_PRACTICE.md) | 22 個 Lab + 2 場模擬考 + 快速複習索引 |
-> | **CKAD**（App Developer） | [CKAD_PRACTICE.md](./CKAD_PRACTICE.md) | 17 個 Lab + 2 場模擬考 |
-> | **CKS**（Security Specialist）| [CKS_PRACTICE.md](./CKS_PRACTICE.md) | 21 個 Lab + 2 場模擬考 + 速查表 |
->
-> 本 README 著重於 **CKA** 的叢集架設與管理；CKAD 著重應用部署與設定，CKS 須先持有 CKA 並聚焦於安全防護。
-
-1. [版本選擇說明](#1-版本選擇說明)
-2. [架構總覽](#2-架構總覽)
-3. [前置需求安裝](#3-前置需求安裝-host-機器)
-4. [專案目錄結構](#4-專案目錄結構)
-5. [Vagrantfile 說明](#5-vagrantfile)
-6. [共用初始化腳本](#6-共用初始化腳本-scriptscommonsh)
-7. [Control Plane 初始化](#7-control-plane-初始化-scriptsmaster_setupsh)
-8. [Worker Node 加入叢集](#8-worker-node-加入叢集-scriptsworker_setupsh)
-9. [啟動叢集](#9-啟動叢集)
-10. [驗證叢集狀態](#10-驗證叢集狀態)
-11. [外部電腦存取叢集](#11-外部電腦存取叢集)
-12. [RBAC 設定實戰](#12-rbac-設定實戰)
-13. [CKA 重點考點整理](#13-cka-重點考點整理)
-14. [常見問題排查](#14-常見問題排查)
-15. [叢集生命週期管理](#15-叢集生命週期管理)
+1. [練習手冊總覽](#1-練習手冊總覽)
+2. [練習環境選擇](#2-練習環境選擇)
+3. [方案 A：Vagrant + VirtualBox（x86 / Intel Mac）](#3-方案-avagrant--virtualboxx86--intel-mac)
+4. [方案 B：Kind（Mac ARM / Apple Silicon）](#4-方案-bkindmac-arm--apple-silicon)
+5. [Kind 環境的 RBAC 與 ServiceAccount](#5-kind-環境的-rbac-與-serviceaccount)
+6. [專案目錄結構](#6-專案目錄結構)
 
 ---
 
-## 1. 版本選擇說明
+## 1. 練習手冊總覽
 
-### 為什麼選這些版本？
+| 認證 | 練習手冊 | 內容 |
+|------|---------|------|
+| **CKA**（Administrator） | [CKA_PRACTICE.md](./CKA_PRACTICE.md) | 叢集架設 + 22 個 Lab + 2 場模擬考 + 快速複習索引 |
+| **CKAD**（App Developer） | [CKAD_PRACTICE.md](./CKAD_PRACTICE.md) | 17 個 Lab + 2 場模擬考 |
+| **CKS**（Security Specialist）| [CKS_PRACTICE.md](./CKS_PRACTICE.md) | 21 個 Lab + 2 場模擬考 + 速查表 |
 
-| 元件 | 版本 | 選擇原因 |
-|------|------|---------|
-| **Ubuntu** | 22.04 LTS (Jammy) | LTS 長期支援、CKA 考試環境一致、套件生態成熟 |
-| **VirtualBox** | 7.0.x | 跨平台穩定、與 Vagrant 整合最佳、免費 |
-| **Vagrant** | 2.4.x | 支援 VirtualBox 7.0、provision 功能完整 |
-| **Kubernetes** | **1.29.x** | ✅ CKA 2024-2025 官方考試版本；距 EOL 尚有餘裕 |
-| **kubeadm** | 1.29.x | 與 K8s 版本一致，CKA 必考工具 |
-| **containerd** | 1.7.x | K8s 官方預設 CRI（Docker shim 已移除）|
-| **CNI：Calico** | 3.27.x | 支援 NetworkPolicy（CKA 考點）、效能佳 |
-| **crictl** | 1.29.x | 替代 docker 指令的容器除錯工具，CKA 常用 |
-
-> ⚠️ **重要**：CKA 考試環境以 **Kubernetes 1.29 / 1.30** 為主流，本 PoC 鎖定 **1.29** 確保與考試環境一致。  
-> 考試前建議至 [training.linuxfoundation.org](https://training.linuxfoundation.org) 確認最新考試版本。
+- **CKA** 著重叢集架設與管理（含 kubeadm、etcd 備份、叢集升級）
+- **CKAD** 著重應用部署與設定（Deployment、Service、ConfigMap 等）
+- **CKS** 須先持有 CKA，聚焦安全防護（NetworkPolicy、Pod Security、Audit 等）
 
 ---
 
-## 2. 架構總覽
+## 2. 練習環境選擇
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      Host 機器 (你的電腦)                      │
-│  OS: macOS / Windows / Linux                                 │
-│  軟體: VirtualBox 7.0 + Vagrant 2.4                          │
-│                                                              │
-│  ┌──────────────────────────────────────────────────────┐   │
-│  │              Host-Only Network: 192.168.56.0/24       │   │
-│  │                                                       │   │
-│  │  ┌─────────────────┐    ┌────────────┐ ┌──────────┐  │   │
-│  │  │  k8s-master      │    │ k8s-node1  │ │k8s-node2 │  │   │
-│  │  │  192.168.56.10   │    │192.168.56.11│ │192.168.56│  │   │
-│  │  │                 │    │            │ │    .12   │  │   │
-│  │  │  Control Plane: │    │  Worker 1  │ │ Worker 2 │  │   │
-│  │  │  - API Server   │◄───┤            │ │          │  │   │
-│  │  │  - etcd         │    │ - kubelet  │ │ - kubelet│  │   │
-│  │  │  - Scheduler    │    │ - kube-    │ │ - kube-  │  │   │
-│  │  │  - Controller   │    │   proxy    │ │   proxy  │  │   │
-│  │  │  - kubelet      │    │ - contain- │ │ - contain│  │   │
-│  │  │  - kube-proxy   │    │   erd      │ │   erd    │  │   │
-│  │  │  2 CPU / 2GB RAM│    │2CPU/2GB RAM│ │2CPU/2GB  │  │   │
-│  │  └─────────────────┘    └────────────┘ └──────────┘  │   │
-│  │                                                       │   │
-│  │         Pod Network CIDR: 192.168.0.0/16 (Calico)    │   │
-│  └──────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────┘
+根據你的硬體平台選擇適合的方案：
 
-Host 最低需求:
-  CPU  : 4 核以上（建議 8 核）
-  RAM  : 8 GB 以上（建議 16 GB）
-  Disk : 50 GB 可用空間
-```
+| | 方案 A：Vagrant + VirtualBox | 方案 B：Kind |
+|---|---|---|
+| **適用平台** | x86 Linux / Windows / Intel Mac | **Mac ARM (M1/M2/M3/M4)** / 任意已裝 Docker 的平台 |
+| **架構** | 3 台完整 VM（1 Master + 2 Worker） | Docker 容器模擬多節點叢集 |
+| **Host 最低需求** | 8 GB RAM / 4 CPU / 50 GB Disk | 4 GB RAM / 2 CPU / 20 GB Disk |
+| **啟動時間** | 10-20 分鐘（首次 provision） | 1-3 分鐘 |
+| **CKA 考試擬真度** | 高（完整 kubeadm 流程） | 中（無 kubeadm init/join 流程） |
+| **適合認證** | CKA 全考域 | CKAD / CKS / CKA 大部分考域 |
 
-### 各元件職責說明（CKA 考點）
-
-| 元件 | 節點 | 功能說明 |
-|------|------|---------|
-| **kube-apiserver** | Master | 叢集唯一入口，所有 kubectl 指令的終點 |
-| **etcd** | Master | 叢集所有狀態資料的鍵值資料庫 |
-| **kube-scheduler** | Master | 決定 Pod 要排到哪個 Worker Node |
-| **kube-controller-manager** | Master | 管理各種 Controller（Deployment、ReplicaSet 等）|
-| **kubelet** | All | 節點代理程式，負責啟動/維護 Pod |
-| **kube-proxy** | All | 管理節點的網路規則（iptables/ipvs）|
-| **containerd** | All | 實際執行容器的 Container Runtime |
-| **Calico** | All | Pod 網路通訊（CNI Plugin）|
+> **Apple Silicon (M1/M2/M3/M4) 使用者**：VirtualBox 不支援 ARM 架構，請使用方案 B（Kind）。
 
 ---
 
-## 3. 前置需求安裝（Host 機器）
+## 3. 方案 A：Vagrant + VirtualBox（x86 / Intel Mac）
 
-### 3.1 安裝 VirtualBox 7.0
+完整的 Vagrant 多節點叢集架設說明已整合至 **[CKA_PRACTICE.md](./CKA_PRACTICE.md)** 的「叢集架設篇」，包含：
 
-```bash
-# macOS (使用 Homebrew)
-brew install --cask virtualbox
-
-# Ubuntu/Debian Host
-wget -O- https://www.virtualbox.org/download/oracle_vbox_2016.asc \
-  | sudo gpg --dearmor -o /usr/share/keyrings/oracle-virtualbox.gpg
-
-echo "deb [arch=amd64 signed-by=/usr/share/keyrings/oracle-virtualbox.gpg] \
-  https://download.virtualbox.org/virtualbox/debian jammy contrib" \
-  | sudo tee /etc/apt/sources.list.d/virtualbox.list
-
-sudo apt update && sudo apt install -y virtualbox-7.0
-
-# Windows
-# 至 https://www.virtualbox.org/wiki/Downloads 下載安裝程式
-```
-
-### 3.2 安裝 Vagrant 2.4
-
-```bash
-# macOS
-brew install --cask vagrant
-
-# Ubuntu/Debian
-wget -O- https://apt.releases.hashicorp.com/gpg \
-  | sudo gpg --dearmor -o /usr/share/keyrings/hashicorp.gpg
-
-echo "deb [signed-by=/usr/share/keyrings/hashicorp.gpg] \
-  https://apt.releases.hashicorp.com jammy main" \
-  | sudo tee /etc/apt/sources.list.d/hashicorp.list
-
-sudo apt update && sudo apt install -y vagrant
-
-# Windows
-# 至 https://developer.hashicorp.com/vagrant/downloads 下載安裝程式
-```
-
-### 3.3 驗證安裝
-
-```bash
-vagrant --version    # Vagrant 2.4.x
-VBoxManage --version # 7.0.x
-```
+- 版本選擇、架構總覽
+- VirtualBox / Vagrant 安裝
+- Vagrantfile、common.sh、master_setup.sh、worker_setup.sh 完整說明
+- 叢集啟動、驗證、外部存取
+- RBAC 設定實戰
+- 叢集生命週期管理（pause / resume / destroy）
 
 ---
 
-## 4. 專案目錄結構
+## 4. 方案 B：Kind（Mac ARM / Apple Silicon）
 
-```
-k8s-cka-poc/
-├── Vagrantfile              # VM 定義：3 台機器的規格與網路
-├── scripts/
-│   ├── common.sh            # 所有節點共用：containerd + kubeadm 安裝（VM 內執行）
-│   ├── master_setup.sh      # 僅 Control Plane：kubeadm init + Calico（VM 內執行）
-│   ├── worker_setup.sh      # 僅 Worker Node：等待並 join（VM 內執行）
-│   ├── pause-cluster.sh     # Host 端：vagrant suspend 全部 VM
-│   └── resume-cluster.sh    # Host 端：依正確順序 vagrant resume + 等待 API Server
-├── manifests/               # K8s YAML 資源定義
-│   ├── rbac/
-│   │   ├── 01-namespace.yaml
-│   │   ├── 02-serviceaccount.yaml
-│   │   ├── 03-role.yaml
-│   │   ├── 04-rolebinding.yaml
-│   │   ├── 05-clusterrole.yaml
-│   │   └── 06-clusterrolebinding.yaml
-│   └── demo/
-│       ├── nginx-deployment.yaml
-│       └── nginx-service.yaml
-└── README.md                # 本文件
-```
+[Kind (Kubernetes IN Docker)](https://kind.sigs.k8s.io/) 使用 Docker 容器模擬 K8s 節點，無需 VM，啟動快速，完美支援 ARM 架構。
 
-建立目錄：
+### 4.1 前置需求
 
 ```bash
-mkdir -p k8s-cka-poc/scripts k8s-cka-poc/manifests/rbac k8s-cka-poc/manifests/demo
-cd k8s-cka-poc
-```
+# 安裝 Docker Desktop（含 ARM 原生支援）
+brew install --cask docker
 
----
+# 安裝 Kind
+brew install kind
 
-## 5. Vagrantfile
-
-建立 `Vagrantfile`（注意：無副檔名）：
-
-```ruby
-# -*- mode: ruby -*-
-# vi: set ft=ruby :
-
-# ============================================================
-# Kubernetes CKA PoC - Vagrantfile
-# 架構: 1 Control Plane + 2 Worker Nodes
-# ============================================================
-
-Vagrant.configure("2") do |config|
-
-  # ── 共用設定 ──────────────────────────────────────────────
-  # Ubuntu 22.04 LTS 官方 Box（由 Vagrant 社群維護）
-  config.vm.box              = "ubuntu/jammy64"
-  config.vm.box_version      = ">= 20240101.0.0"
-
-  # 關閉 Vagrant 自動更新 Guest Additions（避免版本不符問題）
-  config.vbguest.auto_update = false if Vagrant.has_plugin?("vagrant-vbguest")
-
-  # 共用 provision：每台 VM 都執行
-  config.vm.provision "shell", path: "scripts/common.sh"
-
-  # ── 節點定義 ──────────────────────────────────────────────
-  nodes = [
-    { name: "k8s-master", ip: "192.168.56.10", cpu: 2, mem: 2048, role: "master" },
-    { name: "k8s-node1",  ip: "192.168.56.11", cpu: 2, mem: 2048, role: "worker" },
-    { name: "k8s-node2",  ip: "192.168.56.12", cpu: 2, mem: 2048, role: "worker" },
-  ]
-
-  nodes.each do |node|
-    config.vm.define node[:name] do |vm_config|
-
-      # 主機名稱
-      vm_config.vm.hostname = node[:name]
-
-      # Host-Only 網路（VM 之間互通，且 Host 可連入）
-      vm_config.vm.network "private_network", ip: node[:ip]
-
-      # VirtualBox 硬體規格
-      vm_config.vm.provider "virtualbox" do |vb|
-        vb.name   = node[:name]
-        vb.cpus   = node[:cpu]
-        vb.memory = node[:mem]
-
-        # 效能優化
-        vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
-        vb.customize ["modifyvm", :id, "--ioapic", "on"]
-      end
-
-      # 角色專屬 provision
-      if node[:role] == "master"
-        vm_config.vm.provision "shell", path: "scripts/master_setup.sh"
-      else
-        vm_config.vm.provision "shell", path: "scripts/worker_setup.sh"
-      end
-
-    end
-  end
-
-end
-```
-
----
-
-## 6. 共用初始化腳本：`scripts/common.sh`
-
-此腳本在 **全部 3 台** VM 執行，完成：
-- 系統基礎設定（關 swap、載入核心模組）
-- 安裝 containerd（Container Runtime）
-- 安裝 kubeadm、kubelet、kubectl（固定版本 1.29）
-
-```bash
-#!/bin/bash
-# scripts/common.sh
-# 所有 K8s 節點的共用初始化
-# 執行身份：root（Vagrant provision 預設）
-
-set -euo pipefail   # 任何錯誤即停止，未定義變數報錯
-LOG="/var/log/k8s-common-setup.log"
-exec > >(tee -a "$LOG") 2>&1
-
-K8S_VERSION="1.29"
-KUBERNETES_PKG_VERSION="1.29.3-1.1"  # 精確鎖定版本
-
-echo "=========================================="
-echo " [common.sh] 開始：$(date)"
-echo "=========================================="
-
-# ── 1. 停用 swap（K8s 強制要求）─────────────────────────────
-echo "[Step 1] 停用 Swap..."
-swapoff -a
-# 永久停用：移除 /etc/fstab 中的 swap 行
-sed -i '/\bswap\b/d' /etc/fstab
-
-# ── 2. 設定 /etc/hosts（節點互相解析）────────────────────────
-echo "[Step 2] 設定 /etc/hosts..."
-cat >> /etc/hosts <<EOF
-
-# Kubernetes Cluster Nodes
-192.168.56.10  k8s-master
-192.168.56.11  k8s-node1
-192.168.56.12  k8s-node2
-EOF
-
-# ── 3. 載入必要核心模組 ──────────────────────────────────────
-echo "[Step 3] 載入核心模組..."
-cat > /etc/modules-load.d/k8s.conf <<EOF
-overlay        # containerd 使用
-br_netfilter   # 橋接網路過濾（K8s 必要）
-EOF
-
-modprobe overlay
-modprobe br_netfilter
-
-# ── 4. 設定 sysctl 網路參數 ──────────────────────────────────
-echo "[Step 4] 設定 sysctl..."
-cat > /etc/sysctl.d/k8s.conf <<EOF
-# 讓橋接流量通過 iptables（K8s 網路必要）
-net.bridge.bridge-nf-call-iptables  = 1
-net.bridge.bridge-nf-call-ip6tables = 1
-# 允許 IP forwarding（Pod 封包路由）
-net.ipv4.ip_forward = 1
-EOF
-
-sysctl --system   # 立即套用
-
-# ── 5. 安裝 containerd ──────────────────────────────────────
-echo "[Step 5] 安裝 containerd..."
-apt-get update -qq
-apt-get install -y -qq \
-  apt-transport-https \
-  ca-certificates \
-  curl \
-  gnupg \
-  lsb-release
-
-# 新增 Docker 官方 GPG 金鑰（containerd 由 Docker 發布）
-install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
-  | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-chmod a+r /etc/apt/keyrings/docker.gpg
-
-# 新增 Docker apt 來源
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] \
-  https://download.docker.com/linux/ubuntu \
-  $(lsb_release -cs) stable" \
-  | tee /etc/apt/sources.list.d/docker.list > /dev/null
-
-apt-get update -qq
-apt-get install -y -qq containerd.io
-
-# 產生預設設定並啟用 SystemdCgroup（kubeadm 要求）
-mkdir -p /etc/containerd
-containerd config default > /etc/containerd/config.toml
-
-# 啟用 SystemdCgroup：K8s 與 containerd 必須使用同一 cgroup driver
-sed -i 's/SystemdCgroup = false/SystemdCgroup = true/' \
-  /etc/containerd/config.toml
-
-systemctl restart containerd
-systemctl enable containerd
-echo "  containerd 版本：$(containerd --version)"
-
-# ── 6. 安裝 kubeadm、kubelet、kubectl ────────────────────────
-echo "[Step 6] 安裝 Kubernetes 工具 v${K8S_VERSION}..."
-
-# 新增 K8s apt 來源（v1.29 專用 repo）
-curl -fsSL "https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION}/deb/Release.key" \
-  | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-
-echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
-  https://pkgs.k8s.io/core:/stable:/v${K8S_VERSION}/deb/ /" \
-  | tee /etc/apt/sources.list.d/kubernetes.list
-
-apt-get update -qq
-apt-get install -y -qq \
-  kubelet="${KUBERNETES_PKG_VERSION}" \
-  kubeadm="${KUBERNETES_PKG_VERSION}" \
-  kubectl="${KUBERNETES_PKG_VERSION}"
-
-# 鎖定版本，防止 apt upgrade 自動升級（CKA 必備知識）
-apt-mark hold kubelet kubeadm kubectl
-
-# 啟用 kubelet（init 前會 crash-loop，屬正常現象）
-systemctl enable kubelet
-
-# ── 7. 安裝 crictl（容器 debug 工具）────────────────────────
-echo "[Step 7] 安裝 crictl..."
-CRICTL_VERSION="v1.29.0"
-curl -fsSL "https://github.com/kubernetes-sigs/cri-tools/releases/download/${CRICTL_VERSION}/crictl-${CRICTL_VERSION}-linux-amd64.tar.gz" \
-  | tar -C /usr/local/bin -xz
-
-# 設定 crictl 使用 containerd
-cat > /etc/crictl.yaml <<EOF
-runtime-endpoint: unix:///run/containerd/containerd.sock
-image-endpoint: unix:///run/containerd/containerd.sock
-timeout: 10
-debug: false
-EOF
-
-echo "=========================================="
-echo " [common.sh] 完成：$(date)"
-echo "=========================================="
-```
-
----
-
-## 7. Control Plane 初始化：`scripts/master_setup.sh`
-
-```bash
-#!/bin/bash
-# scripts/master_setup.sh
-# 僅在 Control Plane (k8s-master) 執行
-
-set -euo pipefail
-LOG="/var/log/k8s-master-setup.log"
-exec > >(tee -a "$LOG") 2>&1
-
-MASTER_IP="192.168.56.10"
-POD_CIDR="192.168.0.0/16"     # Calico 預設 Pod 網路
-SERVICE_CIDR="10.96.0.0/12"   # K8s Service ClusterIP 範圍
-JOIN_TOKEN_FILE="/vagrant/join_command.sh"  # 透過 /vagrant 共享給 Worker
-
-echo "=========================================="
-echo " [master_setup.sh] 開始：$(date)"
-echo "=========================================="
-
-# ── 1. kubeadm init ─────────────────────────────────────────
-# 這是 CKA 最核心的指令！
-echo "[Step 1] 執行 kubeadm init..."
-kubeadm init \
-  --apiserver-advertise-address="${MASTER_IP}" \
-  --pod-network-cidr="${POD_CIDR}" \
-  --service-cidr="${SERVICE_CIDR}" \
-  --kubernetes-version="1.29.3" \
-  --ignore-preflight-errors=NumCPU \
-  2>&1 | tee /var/log/kubeadm-init.log
-
-# ── 2. 設定 kubectl 存取（為 root 與 vagrant 使用者）──────────
-echo "[Step 2] 設定 kubeconfig..."
-
-# root 使用者
-export KUBECONFIG=/etc/kubernetes/admin.conf
-echo "export KUBECONFIG=/etc/kubernetes/admin.conf" >> /root/.bashrc
-
-# vagrant 使用者（建議日常使用）
-mkdir -p /home/vagrant/.kube
-cp /etc/kubernetes/admin.conf /home/vagrant/.kube/config
-chown -R vagrant:vagrant /home/vagrant/.kube
-
-# ── 3. 安裝 Calico CNI（網路插件）──────────────────────────
-echo "[Step 3] 安裝 Calico CNI v3.27..."
-# 無 CNI 則 CoreDNS 與節點 NotReady
-
-kubectl --kubeconfig=/etc/kubernetes/admin.conf \
-  apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
-
-echo "  等待 Calico Pod 就緒（約 60 秒）..."
-kubectl --kubeconfig=/etc/kubernetes/admin.conf \
-  wait --for=condition=ready pod \
-  -l k8s-app=calico-node \
-  -n kube-system \
-  --timeout=180s
-
-# ── 4. 產生 Worker Join 指令並儲存 ──────────────────────────
-echo "[Step 4] 產生 join 指令..."
-JOIN_CMD=$(kubeadm token create --print-join-command)
-
-# 寫入共享目錄 /vagrant（對應 Host 的 Vagrantfile 所在目錄）
-cat > "${JOIN_TOKEN_FILE}" <<EOF
-#!/bin/bash
-# 自動產生的 Worker Join 指令 - 請勿手動修改
-# 有效期限：24 小時
-${JOIN_CMD}
-EOF
-chmod +x "${JOIN_TOKEN_FILE}"
-
-echo "  Join 指令已儲存至：${JOIN_TOKEN_FILE}"
-
-# ── 5. 設定 kubectl 自動補全與別名（CKA 考試技巧）────────────
-echo "[Step 5] 設定 kubectl 便利工具..."
-
-# 為 vagrant 使用者設定
-sudo -u vagrant bash -c '
-  echo "source <(kubectl completion bash)" >> ~/.bashrc
-  echo "alias k=kubectl" >> ~/.bashrc
-  echo "complete -o default -F __start_kubectl k" >> ~/.bashrc
-  echo "export do='"'"'--dry-run=client -o yaml'"'"'" >> ~/.bashrc
-  echo "export now='"'"'--force --grace-period 0'"'"'" >> ~/.bashrc
-'
-
-# ── 6. 顯示叢集狀態 ──────────────────────────────────────────
-echo ""
-echo "=========================================="
-echo " Control Plane 初始化完成！"
-echo "=========================================="
-kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
-kubectl --kubeconfig=/etc/kubernetes/admin.conf get pods -n kube-system
-echo ""
-echo " 下一步：Worker Node 將自動加入叢集"
-echo "=========================================="
-```
-
----
-
-## 8. Worker Node 加入叢集：`scripts/worker_setup.sh`
-
-```bash
-#!/bin/bash
-# scripts/worker_setup.sh
-# 在 k8s-node1 與 k8s-node2 執行
-
-set -euo pipefail
-LOG="/var/log/k8s-worker-setup.log"
-exec > >(tee -a "$LOG") 2>&1
-
-JOIN_TOKEN_FILE="/vagrant/join_command.sh"
-MAX_WAIT=300   # 最多等待 5 分鐘（等 master 完成 init）
-
-echo "=========================================="
-echo " [worker_setup.sh] 開始：$(date)"
-echo "=========================================="
-
-# ── 等待 Master 產生 join 指令 ──────────────────────────────
-echo "[Step 1] 等待 Control Plane 就緒..."
-elapsed=0
-while [ ! -f "${JOIN_TOKEN_FILE}" ]; do
-  if [ $elapsed -ge $MAX_WAIT ]; then
-    echo "ERROR: 超時！${JOIN_TOKEN_FILE} 不存在，請檢查 master 初始化日誌"
-    exit 1
-  fi
-  echo "  尚未就緒，等待中... (${elapsed}s/${MAX_WAIT}s)"
-  sleep 10
-  elapsed=$((elapsed + 10))
-done
-
-# ── 執行 join ─────────────────────────────────────────────
-echo "[Step 2] 執行 kubeadm join..."
-bash "${JOIN_TOKEN_FILE}"
-
-# ── 設定 kubectl（可選，Worker 不一定需要）──────────────────
-# Worker Node 通常不設定 kubeconfig，但 debug 時有用
-echo "[Step 3] 設定基礎工具..."
-echo "alias k='kubectl'" >> /root/.bashrc
-
-echo "=========================================="
-echo " [worker_setup.sh] 完成：$(date)"
-echo " 此節點已加入叢集！"
-echo "=========================================="
-```
-
----
-
-## 9. 啟動叢集
-
-### 9.1 首次建立（全自動）
-
-```bash
-cd k8s-cka-poc
-
-# 全部啟動（順序很重要：master 必須先完成）
-vagrant up k8s-master    # 先啟動 Master（約 8-12 分鐘）
-vagrant up k8s-node1     # 再啟動 Worker 1（約 4-6 分鐘）
-vagrant up k8s-node2     # 最後啟動 Worker 2（約 4-6 分鐘）
-
-# 或一次啟動全部（Vagrant 按順序執行）
-vagrant up
-```
-
-### 9.2 連線到各節點
-
-```bash
-# 連入 Control Plane（主要操作節點）
-vagrant ssh k8s-master
-
-# 連入 Worker Node
-vagrant ssh k8s-node1
-vagrant ssh k8s-node2
-```
-
-### 9.3 常用 Vagrant 操作
-
-```bash
-vagrant status           # 查看 VM 狀態
-vagrant halt             # 關機（保留設定）
-vagrant up               # 開機
-vagrant reload           # 重啟
-vagrant destroy -f       # 完全刪除（需重建）
-vagrant provision        # 重新執行 provision 腳本
-```
-
----
-
-## 10. 驗證叢集狀態
-
-登入 Master 節點後執行以下驗證：
-
-```bash
-vagrant ssh k8s-master
-```
-
-### 10.1 確認節點狀態
-
-```bash
-kubectl get nodes -o wide
-
-# 預期輸出：
-# NAME         STATUS   ROLES           AGE   VERSION   INTERNAL-IP      OS-IMAGE
-# k8s-master   Ready    control-plane   10m   v1.29.3   192.168.56.10   Ubuntu 22.04
-# k8s-node1    Ready    <none>          8m    v1.29.3   192.168.56.11   Ubuntu 22.04
-# k8s-node2    Ready    <none>          8m    v1.29.3   192.168.56.12   Ubuntu 22.04
-```
-
-### 10.2 確認 System Pod 狀態
-
-```bash
-kubectl get pods -n kube-system
-
-# 預期所有 Pod 均為 Running 或 Completed 狀態
-```
-
-### 10.3 確認 API Server 健康
-
-```bash
-kubectl cluster-info
-kubectl get componentstatuses  # 查看核心元件健康狀態
-
-# 進階：直接打 API Server
-curl -k https://192.168.56.10:6443/healthz
-```
-
-### 10.4 部署測試應用
-
-建立 `manifests/demo/nginx-deployment.yaml`：
-
-```yaml
-# manifests/demo/nginx-deployment.yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: nginx-demo
-  namespace: default
-  labels:
-    app: nginx-demo
-spec:
-  replicas: 3   # 會分散到 2 個 Worker Node
-  selector:
-    matchLabels:
-      app: nginx-demo
-  template:
-    metadata:
-      labels:
-        app: nginx-demo
-    spec:
-      containers:
-      - name: nginx
-        image: nginx:1.25-alpine
-        ports:
-        - containerPort: 80
-        resources:
-          requests:
-            memory: "64Mi"
-            cpu: "50m"
-          limits:
-            memory: "128Mi"
-            cpu: "100m"
----
-apiVersion: v1
-kind: Service
-metadata:
-  name: nginx-demo-svc
-  namespace: default
-spec:
-  type: NodePort
-  selector:
-    app: nginx-demo
-  ports:
-  - port: 80
-    targetPort: 80
-    nodePort: 30080
-```
-
-```bash
-kubectl apply -f manifests/demo/nginx-deployment.yaml
-
-# 驗證 Pod 分散在不同節點
-kubectl get pods -o wide
-
-# 測試 Service
-curl http://192.168.56.11:30080
-curl http://192.168.56.12:30080
-```
-
----
-
-## 11. 外部電腦存取叢集
-
-> API Server 監聽在 `192.168.56.10:6443`，這是 VirtualBox 的 **host-only network**，預設僅 Host 機器（執行 Vagrant 的這台電腦）能直接連線。  
-> 以下整理兩種存取場景。
-
-### 11.1 場景 A：從 Host 機器存取（最簡單）
-
-`192.168.56.10` 對 Host 直接可達，安裝 `kubectl` 並複製 kubeconfig 即可：
-
-```bash
-# 在 Host 上安裝 kubectl
-sudo apt install -y kubectl              # Ubuntu/Debian
-# 或 macOS:    brew install kubectl
-# 或 snap:     sudo snap install kubectl --classic
-
-# 從 master 取得 admin.conf
-mkdir -p ~/.kube
-vagrant ssh k8s-master -c "sudo cat /etc/kubernetes/admin.conf" > ~/.kube/config
-chmod 600 ~/.kube/config
+# 安裝 kubectl
+brew install kubectl
 
 # 驗證
-kubectl get nodes
+docker version
+kind version
+kubectl version --client
 ```
 
-API Server 憑證已內含 `192.168.56.10` 作為 SAN（Subject Alternative Name），無需任何額外設定即可連線。
+### 4.2 叢集配置檔
 
----
+本專案在 `kind/` 目錄提供兩種配置：
 
-### 11.2 場景 B：從另一台電腦（同 LAN 或遠端）存取
+| 配置檔 | 架構 | 適用場景 |
+|--------|------|---------|
+| `kind/k8s-mnodes-config.yaml` | 1 Control Plane + 2 Worker | 日常練習（推薦） |
+| `kind/k8s-ha-config.yaml` | 3 Control Plane + 3 Worker | HA 叢集練習 |
 
-Host-Only Network 對 Host 以外的電腦不可達，二擇一：
-
-#### 方法 1：SSH 隧道（推薦，無需修改 Vagrantfile）
-
-在外部電腦執行：
+### 4.3 建立與管理叢集
 
 ```bash
-# 將外部電腦的 6443 port 透過 Host 轉發到 master
-ssh -L 6443:192.168.56.10:6443 <YOUR_HOST_USER>@<HOST_LAN_IP>
-# 此 SSH session 維持開啟期間，隧道才有效
+# 建立標準叢集（1 Master + 2 Worker）
+kind create cluster --config kind/k8s-mnodes-config.yaml --name cka-lab
+
+# 建立 HA 叢集
+kind create cluster --config kind/k8s-ha-config.yaml --name cka-ha
+
+# 查看叢集
+kind get clusters
+
+# 查看節點（每個節點是一個 Docker 容器）
+kubectl get nodes -o wide
+docker ps
+
+# 刪除叢集
+kind delete cluster --name cka-lab
+
+# 重建叢集（快速重練）
+kind delete cluster --name cka-lab && \
+kind create cluster --config kind/k8s-mnodes-config.yaml --name cka-lab
 ```
 
-將 master 的 `admin.conf` 內容複製到外部電腦 `~/.kube/config`，並修改 `clusters[0].cluster` 區塊：
+### 4.4 Kind 與 Vagrant 環境的操作差異
+
+| 操作 | Vagrant 環境 | Kind 環境 |
+|------|-------------|-----------|
+| 存取叢集 | `vagrant ssh k8s-master` 後操作 | 直接在 Host 執行 `kubectl`（kubeconfig 自動設定） |
+| 節點 SSH | `vagrant ssh k8s-node1` | `docker exec -it cka-lab-worker bash` |
+| NodePort 存取 | `curl http://192.168.56.11:<port>` | 需在配置檔加 `extraPortMappings`（見下方） |
+| 暫停/恢復 | `vagrant suspend / resume` | `docker pause / unpause` 各容器 |
+| CNI | Calico（手動安裝） | kindnet（內建，自動安裝） |
+
+#### NodePort 對外存取
+
+若需要從 Host 存取 NodePort Service，修改 Kind 配置檔：
 
 ```yaml
-clusters:
-- cluster:
-    server: https://127.0.0.1:6443        # 改為 localhost
-    tls-server-name: 192.168.56.10        # 讓 TLS 仍信任既有憑證
-    certificate-authority-data: <保留原值>
-  name: kubernetes
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+nodes:
+- role: control-plane
+  extraPortMappings:
+  - containerPort: 30080    # NodePort
+    hostPort: 30080         # Host 上的 port
+    protocol: TCP
+- role: worker
+- role: worker
 ```
 
-驗證：
+### 4.5 安裝 CNI Plugin（NetworkPolicy 練習用）
+
+Kind 預設使用 kindnet，**不支援 NetworkPolicy**。若需練習 NetworkPolicy（CKA/CKS 考點），需改裝 Calico：
 
 ```bash
-kubectl get nodes
+# 建立叢集時停用預設 CNI
+cat <<EOF | kind create cluster --config - --name cka-netpol
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+networking:
+  disableDefaultCNI: true    # 停用 kindnet
+  podSubnet: 192.168.0.0/16  # Calico 預設 CIDR
+nodes:
+- role: control-plane
+- role: worker
+- role: worker
+EOF
+
+# 安裝 Calico
+kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.27.0/manifests/calico.yaml
+
+# 等待就緒
+kubectl wait --for=condition=ready pod -l k8s-app=calico-node -n kube-system --timeout=180s
 ```
 
-#### 方法 2：Vagrant Port Forward（持久連線，免 SSH）
+---
 
-編輯 `Vagrantfile` 的 master 區塊：
+## 5. Kind 環境的 RBAC 與 ServiceAccount
 
-```ruby
-if node[:role] == "master"
-  vm_config.vm.network "forwarded_port",
-    guest: 6443, host: 6443, host_ip: "0.0.0.0"
-  vm_config.vm.provision "shell", path: "scripts/master_setup.sh"
-else
-  vm_config.vm.provision "shell", path: "scripts/worker_setup.sh"
-end
-```
+> **結論：Kind 叢集的 RBAC 與 ServiceAccount 機制和標準 K8s 完全一致，不需要額外設定。**
 
-執行 `vagrant reload k8s-master`。從外部電腦：
+### 5.1 RBAC 預設行為
 
-```yaml
-clusters:
-- cluster:
-    server: https://<HOST_LAN_IP>:6443
-    tls-server-name: 192.168.56.10        # 必填，避免 cert 名稱不符
-    certificate-authority-data: <保留原值>
-  name: kubernetes
-```
+Kind 叢集啟動後，RBAC 授權模式 (`--authorization-mode=RBAC,Node`) 已預設啟用，與 kubeadm 建立的叢集行為一致：
 
-> ⚠️ API Server 憑證**未包含** Host 的 LAN IP；務必設 `tls-server-name: 192.168.56.10`，否則需加 `insecure-skip-tls-verify: true`（僅測試環境使用）。
-
-#### 進階：讓多個 IP 直接被信任（重新簽憑證）
-
-若要長期讓 LAN IP 或自訂域名直接連線而不靠 `tls-server-name`，可重新 init master 並擴充 SAN：
+- `system:*` 相關的 ClusterRole / ClusterRoleBinding 已自動建立
+- `admin`、`edit`、`view` 等內建 ClusterRole 可直接使用
+- `kube-system` namespace 的 ServiceAccount 已有適當權限
 
 ```bash
-# 在 master 上（會清除現有叢集）
-sudo kubeadm reset -f
-sudo kubeadm init \
-  --apiserver-advertise-address=192.168.56.10 \
-  --apiserver-cert-extra-sans=<HOST_LAN_IP>,localhost,127.0.0.1,my.cluster.local \
-  --pod-network-cidr=192.168.0.0/16 \
-  --kubernetes-version=1.29.3
-```
+# 驗證 RBAC 已啟用
+kubectl api-versions | grep rbac
+# 預期輸出：rbac.authorization.k8s.io/v1
 
-> 練習用建議使用 **方法 1 SSH 隧道**：最簡單、可隨時關閉、無需重啟 VM。
+# 查看內建 ClusterRole
+kubectl get clusterrole | head -20
 
----
-
-## 12. RBAC 設定實戰
-
-> **RBAC（Role-Based Access Control）** 是 CKA 的高頻考點！  
-> 核心概念：**Who（SA/User）** 透過 **RoleBinding/ClusterRoleBinding** 取得 **Role/ClusterRole** 所定義的 **What（API 操作權限）**
-
-### 12.1 RBAC 核心資源關係圖
-
-```
-                    ┌──────────────────────────────────┐
-                    │           Scope 比較               │
-                    │                                   │
-  Namespace 範圍 ──►│  Role           RoleBinding       │
-                    │  (可做什麼?)     (誰能做?)         │
-                    │                                   │
-  Cluster 範圍 ────►│  ClusterRole    ClusterRoleBinding│
-                    │                                   │
-                    └──────────────────────────────────┘
-
-  主體（Subject）種類：
-  ┌──────────────────┬──────────────────────────────────┐
-  │ ServiceAccount   │ K8s 內部身份（Pod 使用）           │
-  │ User             │ 外部使用者（kubeconfig 中的 user） │
-  │ Group            │ 使用者群組                        │
-  └──────────────────┴──────────────────────────────────┘
-```
-
-### 12.2 Namespace 建立
-
-建立 `manifests/rbac/01-namespace.yaml`：
-
-```yaml
-# manifests/rbac/01-namespace.yaml
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: dev        # 開發環境命名空間
-  labels:
-    env: development
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: prod       # 生產環境命名空間
-  labels:
-    env: production
-```
-
-### 12.3 ServiceAccount 建立
-
-建立 `manifests/rbac/02-serviceaccount.yaml`：
-
-```yaml
-# manifests/rbac/02-serviceaccount.yaml
-# ServiceAccount 是 Pod 的身份識別
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: dev-developer    # 開發者帳號
-  namespace: dev
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: dev-readonly     # 唯讀帳號（如 QA 人員）
-  namespace: dev
----
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cicd-deployer    # CI/CD 系統部署帳號
-  namespace: dev
-```
-
-### 12.4 Role 定義（Namespace 範圍）
-
-建立 `manifests/rbac/03-role.yaml`：
-
-```yaml
-# manifests/rbac/03-role.yaml
-# Role 定義在特定 Namespace 內可做哪些操作
-
-# 開發者：可操作大部分資源
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: developer-role
-  namespace: dev
-rules:
-  # Pod 管理（查、建、刪）
-  - apiGroups: [""]
-    resources: ["pods", "pods/log", "pods/exec"]
-    verbs: ["get", "list", "watch", "create", "delete"]
-  # Deployment 管理
-  - apiGroups: ["apps"]
-    resources: ["deployments", "replicasets"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  # Service 管理
-  - apiGroups: [""]
-    resources: ["services"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # ConfigMap 管理
-  - apiGroups: [""]
-    resources: ["configmaps"]
-    verbs: ["get", "list", "watch", "create", "update", "patch"]
----
-# 唯讀者：只能看，不能改
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: readonly-role
-  namespace: dev
-rules:
-  - apiGroups: ["", "apps", "batch"]
-    resources:
-      - pods
-      - pods/log
-      - deployments
-      - replicasets
-      - services
-      - configmaps
-      - jobs
-    verbs: ["get", "list", "watch"]   # 只允許讀取
----
-# CI/CD 部署者：只能更新 Deployment image
-apiVersion: rbac.authorization.k8s.io/v1
-kind: Role
-metadata:
-  name: cicd-deploy-role
-  namespace: dev
-rules:
-  - apiGroups: ["apps"]
-    resources: ["deployments"]
-    verbs: ["get", "list", "watch", "update", "patch"]
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "watch"]
-```
-
-### 12.5 RoleBinding（將 Role 綁給 ServiceAccount）
-
-建立 `manifests/rbac/04-rolebinding.yaml`：
-
-```yaml
-# manifests/rbac/04-rolebinding.yaml
-# RoleBinding 將 Role 與 Subject（SA/User/Group）綁定
-
-# 將 developer-role 綁給 dev-developer ServiceAccount
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: developer-rolebinding
-  namespace: dev
-subjects:
-  - kind: ServiceAccount
-    name: dev-developer
-    namespace: dev
-roleRef:
-  kind: Role
-  name: developer-role
-  apiGroup: rbac.authorization.k8s.io
----
-# 將 readonly-role 綁給 dev-readonly ServiceAccount
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: readonly-rolebinding
-  namespace: dev
-subjects:
-  - kind: ServiceAccount
-    name: dev-readonly
-    namespace: dev
-roleRef:
-  kind: Role
-  name: readonly-role
-  apiGroup: rbac.authorization.k8s.io
----
-# 將 cicd-deploy-role 綁給 cicd-deployer ServiceAccount
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: cicd-deploy-rolebinding
-  namespace: dev
-subjects:
-  - kind: ServiceAccount
-    name: cicd-deployer
-    namespace: dev
-roleRef:
-  kind: Role
-  name: cicd-deploy-role
-  apiGroup: rbac.authorization.k8s.io
-```
-
-### 12.6 ClusterRole（跨 Namespace 範圍）
-
-建立 `manifests/rbac/05-clusterrole.yaml`：
-
-```yaml
-# manifests/rbac/05-clusterrole.yaml
-# ClusterRole 作用於整個叢集（所有 Namespace）
-
-# 叢集監控者：可查看所有節點、所有 Namespace 的 Pod
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: cluster-monitor-role
-rules:
-  # 節點資訊（只有 ClusterRole 能存取，無 namespace）
-  - apiGroups: [""]
-    resources: ["nodes", "nodes/metrics", "nodes/stats"]
-    verbs: ["get", "list", "watch"]
-  # 所有 Namespace 的 Pod 查看
-  - apiGroups: [""]
-    resources: ["pods", "pods/log"]
-    verbs: ["get", "list", "watch"]
-  # Namespace 清單
-  - apiGroups: [""]
-    resources: ["namespaces"]
-    verbs: ["get", "list", "watch"]
-  # PersistentVolume（叢集級儲存）
-  - apiGroups: [""]
-    resources: ["persistentvolumes"]
-    verbs: ["get", "list", "watch"]
----
-# 儲存管理員：可管理 PV/PVC/StorageClass
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: storage-admin-role
-rules:
-  - apiGroups: [""]
-    resources: ["persistentvolumes", "persistentvolumeclaims"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-  - apiGroups: ["storage.k8s.io"]
-    resources: ["storageclasses"]
-    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
-```
-
-### 12.7 ClusterRoleBinding
-
-建立 `manifests/rbac/06-clusterrolebinding.yaml`：
-
-```yaml
-# manifests/rbac/06-clusterrolebinding.yaml
-# ClusterRoleBinding 讓 Subject 取得叢集級別權限
-
-# 叢集監控 ServiceAccount（放在 monitoring 或 default namespace）
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: cluster-monitor
-  namespace: kube-system
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: cluster-monitor-binding
-subjects:
-  - kind: ServiceAccount
-    name: cluster-monitor
-    namespace: kube-system
-roleRef:
-  kind: ClusterRole
-  name: cluster-monitor-role
-  apiGroup: rbac.authorization.k8s.io
----
-# 進階用法：ClusterRole 搭配 RoleBinding（限制在特定 Namespace）
-# 讓 dev-developer 使用 cluster-monitor-role，但只在 dev namespace
-apiVersion: rbac.authorization.k8s.io/v1
-kind: RoleBinding
-metadata:
-  name: dev-monitor-rolebinding
-  namespace: dev         # ← 此 RoleBinding 限制在 dev namespace
-subjects:
-  - kind: ServiceAccount
-    name: dev-developer
-    namespace: dev
-roleRef:
-  kind: ClusterRole      # ← 引用 ClusterRole
-  name: cluster-monitor-role
-  apiGroup: rbac.authorization.k8s.io
-```
-
-### 12.8 套用所有 RBAC 設定
-
-```bash
-# 套用全部 RBAC 資源（在 k8s-master 上執行）
-kubectl apply -f manifests/rbac/
-
-# 確認建立結果
-kubectl get namespace dev prod
-kubectl get serviceaccount -n dev
-kubectl get role,rolebinding -n dev
-kubectl get clusterrole | grep -E "cluster-monitor|storage-admin"
-kubectl get clusterrolebinding | grep cluster-monitor
-```
-
-### 12.9 RBAC 驗證指令（CKA 高頻指令）
-
-```bash
-# ── auth can-i：最直接的權限驗證方式 ────────────────────────
-
-# 以 dev-developer 身份，測試在 dev namespace 能否 list pods
-kubectl auth can-i list pods \
-  --namespace=dev \
-  --as=system:serviceaccount:dev:dev-developer
-
-# 以 dev-readonly 身份，測試能否 delete pods（應為 no）
-kubectl auth can-i delete pods \
-  --namespace=dev \
-  --as=system:serviceaccount:dev:dev-readonly
-
-# 以 cicd-deployer 身份，測試能否 update deployments
-kubectl auth can-i update deployments \
-  --namespace=dev \
-  --as=system:serviceaccount:dev:cicd-deployer
-
-# 測試跨 namespace：dev-developer 能否在 prod namespace 操作？（應為 no）
-kubectl auth can-i list pods \
-  --namespace=prod \
-  --as=system:serviceaccount:dev:dev-developer
-
-# ── 查看 Subject 的所有權限（K8s 1.26+ 支援）────────────────
-kubectl auth can-i --list \
-  --namespace=dev \
-  --as=system:serviceaccount:dev:dev-developer
-
-# ── 快速建立 Role 的 imperative 方式（CKA 考試技巧）─────────
-# 考試中用 kubectl create 比寫 YAML 快很多！
-
-# 建立 Role
-kubectl create role pod-reader \
-  --verb=get,list,watch \
-  --resource=pods \
+# 建立 RBAC 資源（與 Vagrant 環境完全相同）
+kubectl create namespace dev
+kubectl create serviceaccount dev-developer -n dev
+kubectl create role developer-role \
+  --verb=get,list,watch,create,delete \
+  --resource=pods,deployments \
+  --namespace=dev
+kubectl create rolebinding developer-binding \
+  --role=developer-role \
+  --serviceaccount=dev:dev-developer \
   --namespace=dev
 
-# 建立 ClusterRole
-kubectl create clusterrole node-reader \
-  --verb=get,list,watch \
-  --resource=nodes
-
-# 建立 RoleBinding
-kubectl create rolebinding pod-reader-binding \
-  --role=pod-reader \
-  --serviceaccount=dev:dev-readonly \
-  --namespace=dev
-
-# 建立 ClusterRoleBinding
-kubectl create clusterrolebinding node-reader-binding \
-  --clusterrole=node-reader \
-  --serviceaccount=kube-system:cluster-monitor
-
-# ── 使用 --dry-run 預覽 YAML（考試技巧）───────────────────────
-kubectl create role test-role \
-  --verb=get,list \
-  --resource=pods \
-  --namespace=dev \
-  --dry-run=client -o yaml   # 不實際建立，只輸出 YAML
-```
-
----
-
-## 13. CKA 重點考點整理
-
-### 13.1 叢集架構與安裝（25%）
-
-```bash
-# ── kubeadm 常用指令 ──────────────────────────────────────
-
-# 查看目前叢集設定
-kubectl config view
-
-# 查看 kubeadm 設定
-kubeadm config print init-defaults
-
-# 升級叢集版本（CKA 必考！）
-# Step 1：先升 Control Plane
-kubeadm upgrade plan                    # 查看可升級版本
-kubeadm upgrade apply v1.30.0          # 執行升級
-
-# Step 2：升 kubelet & kubectl
-apt-mark unhold kubelet kubectl
-apt-get install -y kubelet=1.30.0-1.1 kubectl=1.30.0-1.1
-apt-mark hold kubelet kubectl
-systemctl daemon-reload && systemctl restart kubelet
-
-# Step 3：升 Worker Node（每台都要）
-kubectl drain k8s-node1 --ignore-daemonsets --delete-emptydir-data
-# 在 node1 上執行 apt-get upgrade 後...
-kubectl uncordon k8s-node1
-
-# ── etcd 備份與還原（CKA 必考！）──────────────────────────
-ETCDCTL_API=3 etcdctl snapshot save /tmp/etcd-backup.db \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key
-
-# 驗證備份
-ETCDCTL_API=3 etcdctl snapshot status /tmp/etcd-backup.db --write-out=table
-
-# 還原 etcd
-ETCDCTL_API=3 etcdctl snapshot restore /tmp/etcd-backup.db \
-  --data-dir=/var/lib/etcd-restore
-
-# 修改 /etc/kubernetes/manifests/etcd.yaml 指向新的 data-dir
-```
-
-### 13.2 工作負載管理（15%）
-
-```bash
-# ── Deployment 操作 ───────────────────────────────────────
-kubectl create deployment nginx \
-  --image=nginx:1.25 --replicas=3 --dry-run=client -o yaml
-
-# 滾動更新（Rolling Update）
-kubectl set image deployment/nginx-demo nginx=nginx:1.26-alpine
-
-# 查看更新狀態
-kubectl rollout status deployment/nginx-demo
-
-# 回滾（Rollback）
-kubectl rollout undo deployment/nginx-demo
-kubectl rollout undo deployment/nginx-demo --to-revision=2
-
-# 暫停/恢復更新
-kubectl rollout pause deployment/nginx-demo
-kubectl rollout resume deployment/nginx-demo
-
-# ── 水平擴縮（HPA）─────────────────────────────────────────
-kubectl scale deployment nginx-demo --replicas=5
-kubectl autoscale deployment nginx-demo --min=2 --max=10 --cpu-percent=70
-```
-
-### 13.3 排程（Scheduling）（15%）
-
-```yaml
-# nodeSelector：選擇特定節點
-spec:
-  nodeSelector:
-    kubernetes.io/hostname: k8s-node1
-
-# nodeName：直接指定節點（最高優先）
-spec:
-  nodeName: k8s-node1
-
-# Taints & Tolerations（CKA 必考）
-# 為節點加 Taint
-# kubectl taint nodes k8s-node1 env=prod:NoSchedule
-
-# Pod 設定 Toleration
-spec:
-  tolerations:
-  - key: "env"
-    operator: "Equal"
-    value: "prod"
-    effect: "NoSchedule"
-
-# Affinity / Anti-Affinity
-spec:
-  affinity:
-    podAntiAffinity:
-      preferredDuringSchedulingIgnoredDuringExecution:
-      - weight: 100
-        podAffinityTerm:
-          labelSelector:
-            matchExpressions:
-            - key: app
-              operator: In
-              values: ["nginx-demo"]
-          topologyKey: kubernetes.io/hostname
-```
-
-```bash
-# 查看節點 Taint
-kubectl describe node k8s-node1 | grep Taint
-
-# 加 / 移除 Taint
-kubectl taint nodes k8s-node1 env=prod:NoSchedule
-kubectl taint nodes k8s-node1 env=prod:NoSchedule-   # 加 - 表示移除
-
-# 查看 Pod 排程原因
-kubectl describe pod <pod-name> | grep -A 5 Events
-```
-
-### 13.4 儲存（Storage）（10%）
-
-```yaml
-# PersistentVolume (PV) - 叢集管理員建立
-apiVersion: v1
-kind: PersistentVolume
-metadata:
-  name: pv-demo
-spec:
-  capacity:
-    storage: 1Gi
-  accessModes:
-    - ReadWriteOnce      # RWO：單節點讀寫
-    # - ReadOnlyMany     # ROX：多節點唯讀
-    # - ReadWriteMany    # RWX：多節點讀寫（NFS 等）
-  persistentVolumeReclaimPolicy: Retain  # 釋放後保留資料
-  hostPath:
-    path: /data/pv-demo  # 測試用，生產不建議
----
-# PersistentVolumeClaim (PVC) - 開發者申請
-apiVersion: v1
-kind: PersistentVolumeClaim
-metadata:
-  name: pvc-demo
-  namespace: dev
-spec:
-  accessModes:
-    - ReadWriteOnce
-  resources:
-    requests:
-      storage: 500Mi
-```
-
-```bash
-# 查看 PV/PVC 狀態
-kubectl get pv,pvc -A
-
-# PVC 狀態說明：
-# Pending  - 尚未綁定到 PV
-# Bound    - 已綁定
-# Released - PVC 刪除後，PV 等待回收
-```
-
-### 13.5 網路（Networking）（20%）
-
-```bash
-# ── Service 類型 ──────────────────────────────────────────
-# ClusterIP（叢集內部，預設）
-kubectl expose deployment nginx-demo --port=80 --type=ClusterIP
-
-# NodePort（對外，port 30000-32767）
-kubectl expose deployment nginx-demo --port=80 --type=NodePort --node-port=30080
-
-# ── NetworkPolicy（CKA 必考）──────────────────────────────
-```
-
-```yaml
-# 預設拒絕所有 ingress 流量
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: default-deny-ingress
-  namespace: dev
-spec:
-  podSelector: {}      # 空 selector = 選取所有 Pod
-  policyTypes:
-  - Ingress            # 只限制入站流量
-
----
-# 只允許特定 Label 的 Pod 進入
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: allow-frontend
-  namespace: dev
-spec:
-  podSelector:
-    matchLabels:
-      app: backend
-  policyTypes:
-  - Ingress
-  ingress:
-  - from:
-    - podSelector:
-        matchLabels:
-          app: frontend    # 只允許 frontend Pod 存取 backend
-    ports:
-    - protocol: TCP
-      port: 8080
-```
-
-### 13.6 故障排查（Troubleshooting）（30%）
-
-```bash
-# ── Pod 排查 ──────────────────────────────────────────────
-kubectl describe pod <pod-name>             # 查看事件（Events）
-kubectl logs <pod-name>                    # 查看日誌
-kubectl logs <pod-name> -c <container>     # 多容器 Pod 指定 container
-kubectl logs <pod-name> --previous         # 上次崩潰的日誌
-
-# 進入 Pod 除錯
-kubectl exec -it <pod-name> -- bash
-kubectl exec -it <pod-name> -c <container> -- sh
-
-# ── 節點排查 ──────────────────────────────────────────────
-kubectl describe node k8s-node1            # 查看節點詳情
-kubectl top nodes                          # 資源使用（需 metrics-server）
-kubectl top pods -n dev
-
-# 在節點上排查
-ssh vagrant@192.168.56.11
-systemctl status kubelet                   # kubelet 狀態
-journalctl -u kubelet -f                   # kubelet 即時日誌
-crictl ps                                  # 查看容器（代替 docker ps）
-crictl logs <container-id>                 # 容器日誌
-crictl pods                                # 查看所有 Pod
-
-# ── 元件排查 ──────────────────────────────────────────────
-# Control Plane 元件是 Static Pod，設定在：
-ls /etc/kubernetes/manifests/
-# etcd.yaml  kube-apiserver.yaml  kube-controller-manager.yaml  kube-scheduler.yaml
-
-# 修改後 kubelet 自動重啟（無需 kubectl apply）
-
-# ── 常見狀態說明 ──────────────────────────────────────────
-# Pending        - 等待排程或資源不足
-# ContainerCreating - 正在拉取映像或建立容器
-# Running        - 正常運行
-# CrashLoopBackOff  - 容器反覆崩潰（查 logs --previous）
-# OOMKilled      - 記憶體不足被殺（調高 limits）
-# Evicted        - 節點資源不足被驅逐
-# ImagePullBackOff  - 映像拉取失敗（查 image 名稱或 registry）
-```
-
-### 13.7 CKA 考試必備技巧
-
-```bash
-# 1. 善用 alias 和 dry-run（考試前必設定）
-alias k=kubectl
-export do='--dry-run=client -o yaml'
-export now='--force --grace-period=0'
-source <(kubectl completion bash)
-
-# 2. 快速產生 YAML template
-k run nginx --image=nginx $do > pod.yaml                          # Pod
-k create deploy nginx --image=nginx $do > deploy.yaml             # Deployment
-k create job myjob --image=busybox $do -- echo hello > job.yaml   # Job
-k create cronjob mycron --image=busybox --schedule="*/1 * * * *" $do > cronjob.yaml
-
-# 3. 快速刪除 Pod（不等 graceful shutdown）
-k delete pod <pod-name> $now
-
-# 4. 切換 context（多叢集考試環境）
-kubectl config get-contexts
-kubectl config use-context <context-name>
-kubectl config current-context
-
-# 5. 查看 API 資源簡稱
-kubectl api-resources | grep -E "deploy|svc|ing|pvc|cm|secret"
-# po=pods, deploy=deployments, svc=services
-# ing=ingress, pvc=persistentvolumeclaims
-# cm=configmaps, sa=serviceaccounts
-
-# 6. 善用 -A 查看所有 namespace
-kubectl get pods -A                    # 所有 namespace 的 Pod
-kubectl get pods -A | grep -v Running  # 找出非 Running 的 Pod
-
-# 7. jsonpath 輸出（常考）
-kubectl get nodes -o jsonpath='{.items[*].metadata.name}'
-kubectl get pods -o jsonpath='{.items[0].status.podIP}'
-kubectl get pods -o custom-columns=NAME:.metadata.name,IP:.status.podIP
-```
-
----
-
-## 14. 常見問題排查
-
-### Q1：Node 狀態為 NotReady
-
-```bash
-# 在問題節點上執行
-systemctl status kubelet
-journalctl -u kubelet --no-pager -n 50
-
-# 常見原因：
-# 1. CNI 未安裝（執行 kubeadm init 後忘記裝 Calico）
-# 2. containerd 未啟動 → systemctl restart containerd
-# 3. swap 未關閉 → swapoff -a
-```
-
-### Q2：kubeadm init 失敗
-
-```bash
-# 查看詳細錯誤
-kubeadm init --v=5 2>&1 | tail -50
-
-# 重置後重試
-kubeadm reset -f
-rm -rf /etc/kubernetes /var/lib/etcd
-kubeadm init ...
-```
-
-### Q3：Worker 無法 join
-
-```bash
-# Token 過期（預設 24 小時）→ 重新產生
-kubeadm token create --print-join-command
-
-# 確認 master 6443 port 可達
-nc -zv 192.168.56.10 6443
-```
-
-### Q4：Pod 無法跨節點通訊
-
-```bash
-# Calico 未正常運行
-kubectl get pods -n kube-system | grep calico
-
-# 確認 BGP peering（Calico debug）
-kubectl exec -n kube-system -it <calico-node-pod> \
-  -- calico-node -bird-ready
-```
-
-### Q5：RBAC 權限不生效
-
-```bash
-# 確認 RoleBinding 綁定對象正確
-kubectl describe rolebinding developer-rolebinding -n dev
-
-# 重新測試
+# 驗證
 kubectl auth can-i list pods -n dev \
   --as=system:serviceaccount:dev:dev-developer
+# yes
+```
+
+### 5.2 ServiceAccount 注意事項
+
+K8s 1.24+ 後（Kind 預設使用較新版本），ServiceAccount Token 的行為有以下變化：
+
+| 版本 | Token 行為 |
+|------|-----------|
+| K8s < 1.24 | 建立 SA 時自動產生永久 Secret Token |
+| K8s >= 1.24 | **不再自動產生** Secret Token；改用 TokenRequest API 發行短期 Token |
+
+```bash
+# 若需要長期 Token（例如 CI/CD 用途），需手動建立 Secret：
+kubectl apply -f - <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dev-developer-token
+  namespace: dev
+  annotations:
+    kubernetes.io/service-account.name: dev-developer
+type: kubernetes.io/service-account-token
+EOF
+
+# 取得 Token
+kubectl get secret dev-developer-token -n dev -o jsonpath='{.data.token}' | base64 -d
+```
+
+### 5.3 Kind 環境不可練習的 CKA 考點
+
+以下考點依賴完整的 kubeadm 流程或 VM 環境，Kind 無法模擬：
+
+| 考點 | 原因 | 替代方式 |
+|------|------|---------|
+| `kubeadm init / join` | Kind 叢集由 Kind CLI 建立，非 kubeadm | 閱讀理解 + Vagrant 環境實操 |
+| `kubeadm upgrade` | 同上 | 閱讀理解 |
+| etcd 備份還原 | Kind 的 etcd 運行於容器內，路徑與考試不同 | 可練習指令，但路徑需調整 |
+| kubelet 故障修復 | Kind 節點是 Docker 容器，`systemctl` 行為不同 | 可 `docker exec` 進入容器練習 |
+| Static Pod manifest 修改 | 路徑存在但 kubelet 行為略有差異 | 可練習，效果接近 |
+
+> 上述考點合計約佔 CKA 考試的 10-15%。其餘 85-90% 的考點（RBAC、Deployment、Service、NetworkPolicy、PV/PVC、故障排查等）在 Kind 環境下均可完整練習。
+
+---
+
+## 6. 專案目錄結構
+
+```
+ckx-preparation/
+├── README.md                # 本文件（總覽與環境選擇）
+├── CKA_PRACTICE.md          # CKA 叢集架設 + 22 Labs + 2 模擬考
+├── CKAD_PRACTICE.md         # CKAD 17 Labs + 2 模擬考
+├── CKS_PRACTICE.md          # CKS 21 Labs + 2 模擬考
+├── Vagrantfile              # 方案 A：VM 定義（1 Master + 2 Worker）
+├── scripts/                 # 方案 A：Vagrant provision 腳本
+│   ├── common.sh            # 所有 VM 共用：containerd + kubeadm
+│   ├── master_setup.sh      # Control Plane：kubeadm init + Calico
+│   ├── worker_setup.sh      # Worker Node：kubeadm join
+│   ├── pause-cluster.sh     # Host 端：暫停叢集
+│   └── resume-cluster.sh    # Host 端：恢復叢集
+└── kind/                    # 方案 B：Kind 叢集配置
+    ├── k8s-mnodes-config.yaml  # 1 Master + 2 Worker（推薦）
+    └── k8s-ha-config.yaml      # 3 Master + 3 Worker（HA）
 ```
 
 ---
 
-## 15. 叢集生命週期管理
-
-依需求選擇下列操作：
-
-| 情境 | 指令 | RAM 釋放 | 復原速度 | 資料保留 |
-|------|------|---------|---------|---------|
-| **臨時離開**（午餐、會議） | `vagrant suspend` | ❌ 不釋放 | ~10–20 秒 | ✅ 連 in-memory 狀態 |
-| **長時間關閉**（過夜、隔日繼續） | `vagrant halt` | ✅ 釋放 | ~30–60 秒 | ✅ 磁碟資料保留，叢集自動 reconcile |
-| **完全銷毀**（重新練習） | `vagrant destroy -f` | ✅ 釋放 | 10+ 分鐘（重建） | ❌ 全清空 |
-| **保留 VM 重置 K8s** | `kubeadm reset` | — | — | VM 保留，K8s 狀態清空 |
-
-> 💡 `vagrant halt` 不是 pause，而是 **優雅關機**；真正的暫停是 `vagrant suspend`（VM 狀態 snapshot 到磁碟，RAM 仍占空間但 CPU 釋放）。
-
-### 15.1 暫停與復原（推薦日常使用）
-
-本專案附帶 helper 腳本，依正確順序操作 3 台 VM：
-
-```bash
-# 暫停整個叢集（在 Host 機器、Vagrantfile 同目錄執行）
-./scripts/pause-cluster.sh
-
-# 復原（master 先起，等 API Server Ready 後再起 workers）
-./scripts/resume-cluster.sh
-```
-
-或手動執行（不需腳本時）：
-
-```bash
-# 暫停（順序不重要）
-vagrant suspend k8s-node2 k8s-node1 k8s-master
-
-# 復原（建議 master 先，避免 workers 連不到 API Server）
-vagrant resume k8s-master
-vagrant resume k8s-node1 k8s-node2
-```
-
-### 15.2 關機與開機
-
-```bash
-vagrant halt              # 優雅關機，全部 VM 進入 poweroff 狀態
-vagrant up                # 開機（已 provisioned 過，跳過 setup 腳本）
-```
-
-### 15.3 完全銷毀
-
-```bash
-vagrant destroy -f        # 刪除全部 VM 與磁碟，需重新 vagrant up 建立
-```
-
-### 15.4 保留 VM 但只重置 K8s
-
-不刪 VM，只把 K8s 狀態清光，便於重練 `kubeadm init` 流程：
-
-```bash
-vagrant ssh k8s-master
-  sudo kubeadm reset -f
-  sudo rm -rf /etc/kubernetes /var/lib/etcd $HOME/.kube
-  exit
-
-vagrant ssh k8s-node1
-  sudo kubeadm reset -f
-  exit
-
-vagrant ssh k8s-node2
-  sudo kubeadm reset -f
-  exit
-
-# 重新跑 master + worker provision
-vagrant provision k8s-master
-vagrant provision k8s-node1 k8s-node2
-```
-
----
-
-## 附錄：快速參考卡（考試用）
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                    CKA 快速參考卡                             │
-├─────────────────┬───────────────────────────────────────────┤
-│ Pod             │ k run NAME --image=IMG                    │
-│ Deployment      │ k create deploy NAME --image=IMG --replicas=N│
-│ Service         │ k expose deploy NAME --port=P --type=TYPE │
-│ ConfigMap       │ k create cm NAME --from-literal=K=V       │
-│ Secret          │ k create secret generic NAME --from-literal=K=V│
-│ ServiceAccount  │ k create sa NAME -n NS                    │
-│ Role            │ k create role R --verb=V --resource=RES   │
-│ RoleBinding     │ k create rolebinding RB --role=R --sa=NS:SA│
-│ ClusterRole     │ k create clusterrole CR --verb=V --resource=RES│
-│ ClusterRoleBinding│k create clusterrolebinding CRB --clusterrole=CR --sa=NS:SA│
-├─────────────────┼───────────────────────────────────────────┤
-│ 查看權限        │ k auth can-i VERB RES --as=system:serviceaccount:NS:SA│
-│ 列出所有資源    │ k api-resources                           │
-│ 查 Pod 日誌     │ k logs POD [-c CONTAINER] [--previous]   │
-│ 進入 Pod        │ k exec -it POD -- bash                   │
-│ 節點排水        │ k drain NODE --ignore-daemonsets          │
-│ 節點恢復        │ k uncordon NODE                           │
-│ ETCD 備份       │ etcdctl snapshot save FILE --endpoints=... │
-└─────────────────┴───────────────────────────────────────────┘
-```
-
----
-
-*文件版本：v1.0 | Kubernetes 1.29 | 最後更新：2024*  
-*參考資料：[kubernetes.io/docs](https://kubernetes.io/docs) | [killer.sh](https://killer.sh) CKA 模擬考試*
-
----
-
-> 🎯 準備好了嗎？前往 **[CKA_PRACTICE.md](./CKA_PRACTICE.md)** 開始 22 個 Lab 練習！
+*Kubernetes CKx 認證練習環境 | 支援 CKA / CKAD / CKS*
