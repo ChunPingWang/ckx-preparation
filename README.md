@@ -10,6 +10,7 @@
 2. [練習環境選擇](#2-練習環境選擇)
 3. [方案 A：Vagrant + VirtualBox（x86 / Intel Mac）](#3-方案-avagrant--virtualboxx86--intel-mac)
 4. [方案 B：Kind（Mac ARM / Apple Silicon）](#4-方案-bkindmac-arm--apple-silicon)
+   - 4.5 [登入 Kind 節點容器](#45-登入-kind-節點容器)
 5. [Kind 環境的 RBAC 與 ServiceAccount](#5-kind-環境的-rbac-與-serviceaccount)
 6. [專案目錄結構](#6-專案目錄結構)
 
@@ -141,7 +142,110 @@ nodes:
 - role: worker
 ```
 
-### 4.5 安裝 CNI Plugin（NetworkPolicy 練習用）
+### 4.5 登入 Kind 節點容器
+
+Kind 的每個節點都是一個 Docker 容器，可透過 `docker exec` 登入操作，等同 Vagrant 環境的 `vagrant ssh`。
+
+#### 查看節點容器名稱
+
+```bash
+# 列出所有 Kind 節點容器
+docker ps --filter "label=io.x-k8s.kind.cluster=cka-lab" --format "table {{.Names}}\t{{.Status}}"
+
+# 預期輸出（以 k8s-mnodes-config.yaml 為例）：
+# NAMES                    STATUS
+# cka-lab-control-plane    Up 10 minutes
+# cka-lab-worker           Up 10 minutes
+# cka-lab-worker2          Up 10 minutes
+```
+
+#### 登入節點
+
+```bash
+# 登入 Control Plane 節點
+docker exec -it cka-lab-control-plane bash
+
+# 登入 Worker Node
+docker exec -it cka-lab-worker bash
+docker exec -it cka-lab-worker2 bash
+```
+
+#### 節點內常用操作
+
+登入後即為 root 身份，可直接執行系統指令：
+
+```bash
+# ── 查看系統服務 ──────────────────────────────────────────
+systemctl status kubelet          # kubelet 狀態
+journalctl -u kubelet --no-pager -n 50   # kubelet 日誌
+
+# ── 容器除錯（crictl）────────────────────────────────────
+crictl ps                         # 列出正在運行的容器
+crictl pods                       # 列出所有 Pod
+crictl logs <container-id>        # 查看容器日誌
+crictl images                     # 列出已下載的映像
+
+# ── 查看 Static Pod manifest（僅 Control Plane）──────────
+ls /etc/kubernetes/manifests/
+# etcd.yaml  kube-apiserver.yaml  kube-controller-manager.yaml  kube-scheduler.yaml
+
+cat /etc/kubernetes/manifests/kube-apiserver.yaml
+
+# ── 查看 kubelet 設定 ────────────────────────────────────
+cat /var/lib/kubelet/config.yaml
+
+# ── 網路除錯 ─────────────────────────────────────────────
+ip addr                           # 查看網路介面
+ip route                          # 查看路由表
+iptables -t nat -L KUBE-SERVICES  # 查看 Service 的 iptables 規則
+
+# ── 離開節點 ─────────────────────────────────────────────
+exit
+```
+
+#### 在節點容器內執行單一指令（不登入）
+
+```bash
+# 查看 Control Plane 的 kubelet 狀態
+docker exec cka-lab-control-plane systemctl status kubelet
+
+# 查看 Worker 的 containerd 版本
+docker exec cka-lab-worker containerd --version
+
+# 查看 etcd manifest
+docker exec cka-lab-control-plane cat /etc/kubernetes/manifests/etcd.yaml
+
+# 模擬 kubelet 故障（Lab 練習用）
+docker exec cka-lab-worker systemctl stop kubelet
+
+# 恢復 kubelet
+docker exec cka-lab-worker systemctl start kubelet
+```
+
+#### 在節點間複製檔案
+
+```bash
+# 從 Host 複製檔案到節點容器
+docker cp ./my-config.yaml cka-lab-control-plane:/tmp/my-config.yaml
+
+# 從節點容器複製檔案到 Host
+docker cp cka-lab-control-plane:/etc/kubernetes/admin.conf ./admin.conf
+```
+
+#### Kind 節點與 VM 節點的差異
+
+| 操作 | Vagrant VM | Kind 容器 |
+|------|-----------|-----------|
+| 登入方式 | `vagrant ssh k8s-master` | `docker exec -it cka-lab-control-plane bash` |
+| 使用者身份 | vagrant（需 `sudo`） | **root**（直接操作，無需 sudo） |
+| 單指令執行 | `vagrant ssh k8s-master -c "cmd"` | `docker exec cka-lab-control-plane cmd` |
+| 檔案傳輸 | `/vagrant` 共享目錄 | `docker cp` |
+| 服務管理 | `systemctl`（完整 systemd） | `systemctl`（Kind 容器內含 systemd） |
+| 重開機 | `vagrant reload k8s-master` | `docker restart cka-lab-control-plane` |
+
+---
+
+### 4.6 安裝 CNI Plugin（NetworkPolicy 練習用）
 
 Kind 預設使用 kindnet，**不支援 NetworkPolicy**。若需練習 NetworkPolicy（CKA/CKS 考點），需改裝 Calico：
 
