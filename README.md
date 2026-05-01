@@ -344,11 +344,78 @@ kubectl get secret dev-developer-token -n dev -o jsonpath='{.data.token}' | base
 |------|------|---------|
 | `kubeadm init / join` | Kind 叢集由 Kind CLI 建立，非 kubeadm | 閱讀理解 + Vagrant 環境實操 |
 | `kubeadm upgrade` | 同上 | 閱讀理解 |
-| etcd 備份還原 | Kind 的 etcd 運行於容器內，路徑與考試不同 | 可練習指令，但路徑需調整 |
+| etcd 備份還原 | Mac ARM 上 etcdctl 會因模擬層問題 crash（見下方說明） | 改用 `kubectl exec` 方式操作，或在 Host 端執行 |
 | kubelet 故障修復 | Kind 節點是 Docker 容器，`systemctl` 行為不同 | 可 `docker exec` 進入容器練習 |
 | Static Pod manifest 修改 | 路徑存在但 kubelet 行為略有差異 | 可練習，效果接近 |
 
 > 上述考點合計約佔 CKA 考試的 10-15%。其餘 85-90% 的考點（RBAC、Deployment、Service、NetworkPolicy、PV/PVC、故障排查等）在 Kind 環境下均可完整練習。
+
+### 5.4 Mac ARM 上的 etcd 備份練習
+
+在 Mac ARM (Apple Silicon) 上，Kind 節點容器內的 `etcdctl` 是 x86 binary，透過 Rosetta/QEMU 模擬執行。執行 `etcdctl snapshot save` 時可能觸發以下錯誤：
+
+```
+runtime: lfstack.push invalid packing: node=0xffff58bc7080 ...
+fatal error: lfstack.push
+```
+
+這是 **Go runtime 在 x86 模擬層的已知問題**，與你的操作或叢集狀態無關。
+
+#### 替代方案：從 Host 端使用 kubectl exec 操作 etcd
+
+不登入容器，改從 Host 端透過 `kubectl exec` 對 etcd Pod 執行備份：
+
+```bash
+# ── 方法 1：透過 kubectl exec 在 etcd Pod 內備份 ─────────
+
+# 找到 etcd Pod 名稱
+kubectl get pod -n kube-system -l component=etcd
+
+# 執行備份（在 etcd Pod 內直接操作，不經過模擬層問題）
+kubectl exec -n kube-system etcd-cka-lab-control-plane -- \
+  etcdctl snapshot save /var/lib/etcd/snapshot.db \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+
+# 將備份複製到 Host
+docker cp cka-lab-control-plane:/var/lib/etcd/snapshot.db ./etcd-snapshot.db
+
+# 驗證備份
+kubectl exec -n kube-system etcd-cka-lab-control-plane -- \
+  etcdctl snapshot status /var/lib/etcd/snapshot.db \
+  --write-out=table
+
+# ── 方法 2：在 Host 安裝 ARM 原生 etcdctl ────────────────
+
+# 安裝 ARM 原生版本（無模擬層問題）
+brew install etcd
+
+# 從 Kind 容器複製憑證到 Host
+mkdir -p /tmp/etcd-certs
+docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/ca.crt /tmp/etcd-certs/
+docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/server.crt /tmp/etcd-certs/
+docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/server.key /tmp/etcd-certs/
+
+# 查看 etcd 容器對外的 port
+docker port cka-lab-control-plane
+
+# 透過 docker network 直接連線（取得容器 IP）
+ETCD_IP=$(docker inspect cka-lab-control-plane \
+  --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+
+ETCDCTL_API=3 etcdctl snapshot save ./etcd-snapshot.db \
+  --endpoints=https://${ETCD_IP}:2379 \
+  --cacert=/tmp/etcd-certs/ca.crt \
+  --cert=/tmp/etcd-certs/server.crt \
+  --key=/tmp/etcd-certs/server.key
+
+# 驗證
+ETCDCTL_API=3 etcdctl snapshot status ./etcd-snapshot.db --write-out=table
+```
+
+> **CKA 考試提醒**：實際考試環境為 x86 Linux VM，不會遇到此模擬層問題。此處的替代方案僅用於在 Mac ARM 上練習 etcd 操作指令與流程。
 
 ---
 
