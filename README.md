@@ -361,61 +361,65 @@ fatal error: lfstack.push
 
 這是 **Go runtime 在 x86 模擬層的已知問題**，與你的操作或叢集狀態無關。
 
-#### 替代方案：從 Host 端使用 kubectl exec 操作 etcd
+#### 為什麼 kubectl exec 進 etcd Pod 也不行？
 
-不登入容器，改從 Host 端透過 `kubectl exec` 對 etcd Pod 執行備份：
+etcd Pod 使用 [distroless](https://github.com/GoogleContainerTools/distroless) 映像，容器內**只有 etcd 相關 binary**，沒有 `ls`、`sh`、`bash` 等任何 shell 工具。因此 `kubectl exec` 無法在 etcd Pod 內執行任意指令：
+
+```
+# 這行會失敗：
+kubectl exec -n kube-system etcd-kind-control-plane -- ls /var/lib/etcd
+# error: "ls": executable file not found in $PATH
+```
+
+#### 替代方案：在 Host 安裝 ARM 原生 etcdctl
+
+在 Mac 上安裝 ARM 原生版本的 etcdctl，透過 Docker network 直接連線到 Kind 容器內的 etcd：
 
 ```bash
-# ── 方法 1：透過 kubectl exec 在 etcd Pod 內備份 ─────────
-
-# 找到 etcd Pod 名稱
-kubectl get pod -n kube-system -l component=etcd
-
-# 執行備份（在 etcd Pod 內直接操作，不經過模擬層問題）
-kubectl exec -n kube-system etcd-cka-lab-control-plane -- \
-  etcdctl snapshot save /var/lib/etcd/snapshot.db \
-  --endpoints=https://127.0.0.1:2379 \
-  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
-  --cert=/etc/kubernetes/pki/etcd/server.crt \
-  --key=/etc/kubernetes/pki/etcd/server.key
-
-# 將備份複製到 Host
-docker cp cka-lab-control-plane:/var/lib/etcd/snapshot.db ./etcd-snapshot.db
-
-# 驗證備份
-kubectl exec -n kube-system etcd-cka-lab-control-plane -- \
-  etcdctl snapshot status /var/lib/etcd/snapshot.db \
-  --write-out=table
-
-# ── 方法 2：在 Host 安裝 ARM 原生 etcdctl ────────────────
-
-# 安裝 ARM 原生版本（無模擬層問題）
+# ── Step 1：安裝 ARM 原生 etcdctl ────────────────────────
 brew install etcd
 
-# 從 Kind 容器複製憑證到 Host
+# 確認版本（應為 darwin/arm64）
+etcdctl version
+
+# ── Step 2：從 Kind 容器複製 etcd 憑證到 Host ────────────
 mkdir -p /tmp/etcd-certs
-docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/ca.crt /tmp/etcd-certs/
-docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/server.crt /tmp/etcd-certs/
-docker cp cka-lab-control-plane:/etc/kubernetes/pki/etcd/server.key /tmp/etcd-certs/
+docker cp kind-control-plane:/etc/kubernetes/pki/etcd/ca.crt /tmp/etcd-certs/
+docker cp kind-control-plane:/etc/kubernetes/pki/etcd/server.crt /tmp/etcd-certs/
+docker cp kind-control-plane:/etc/kubernetes/pki/etcd/server.key /tmp/etcd-certs/
 
-# 查看 etcd 容器對外的 port
-docker port cka-lab-control-plane
-
-# 透過 docker network 直接連線（取得容器 IP）
-ETCD_IP=$(docker inspect cka-lab-control-plane \
+# ── Step 3：取得 Kind 容器的 IP ──────────────────────────
+ETCD_IP=$(docker inspect kind-control-plane \
   --format '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}')
+echo "etcd IP: ${ETCD_IP}"
 
+# ── Step 4：執行備份 ─────────────────────────────────────
 ETCDCTL_API=3 etcdctl snapshot save ./etcd-snapshot.db \
   --endpoints=https://${ETCD_IP}:2379 \
   --cacert=/tmp/etcd-certs/ca.crt \
   --cert=/tmp/etcd-certs/server.crt \
   --key=/tmp/etcd-certs/server.key
 
-# 驗證
+# ── Step 5：驗證備份 ─────────────────────────────────────
 ETCDCTL_API=3 etcdctl snapshot status ./etcd-snapshot.db --write-out=table
+
+# 預期輸出（範例）：
+# +----------+----------+------------+------------+
+# |   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |
+# +----------+----------+------------+------------+
+# | a1b2c3d4 |     1234 |        512 |    2.5 MB  |
+# +----------+----------+------------+------------+
+
+# ── Step 6：還原練習 ─────────────────────────────────────
+# 還原到本地目錄（練習指令流程）
+ETCDCTL_API=3 etcdctl snapshot restore ./etcd-snapshot.db \
+  --data-dir=/tmp/etcd-restore
+ls /tmp/etcd-restore/   # 確認還原資料
 ```
 
-> **CKA 考試提醒**：實際考試環境為 x86 Linux VM，不會遇到此模擬層問題。此處的替代方案僅用於在 Mac ARM 上練習 etcd 操作指令與流程。
+> **注意**：叢集名稱不同時，容器名稱也不同。請用 `docker ps --filter "label=io.x-k8s.kind.role=control-plane"` 確認實際名稱（例如 `kind-control-plane`、`cka-lab-control-plane` 等）。
+
+> **CKA 考試提醒**：實際考試環境為 x86 Linux VM，etcdctl 直接在節點上執行即可，不會遇到 ARM 模擬層或 distroless 映像的問題。此處的替代方案僅用於在 Mac ARM 上練習 etcd 操作指令與流程。
 
 ---
 
